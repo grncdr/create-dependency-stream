@@ -1,7 +1,8 @@
 # create-dependency-stream
 
-```Synopsis
+## Synopsis
 
+```javascript
 var createDependencyStream = require('create-dependency-stream')
 var pkgJSON = require('./package.json'); 
 var stream = createDependencyStream(pkgJSON, {
