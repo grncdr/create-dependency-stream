@@ -1,6 +1,4 @@
-//var Stream      = require('stream');
-Error.stackTraceLimit = 40;
-
+var path        = require('path');
 var npm         = require('npm');
 var map         = require('map-stream');
 var mergeStream = require('merge-stream');
@@ -11,33 +9,30 @@ var packageToDependencyStream = require('package-to-dependency-stream');
 
 module.exports = createDependencyStream
 
-
-function createDependencyStream(pkgJSON, opts) {
+function createDependencyStream(rootJSON, opts, parentDep) {
   opts = opts || {};
-  opts.registry = defined(
-    // pkgJSON.registry,  Maybe?
-    opts.registry,
-    'http://registry.npmjs.org'
-  );
+  opts.loglevel = defined(opts.loglevel, 'silent');
 
-  var read = npm.commands.cache.read;
-
-  var pipeline = combine(
-    map(getPackageJson),
-    map(maybeRecur)
-  );
+  var pipeline = combine(map(getPackage), map(maybeRecur));
 
   var out = mergeStream();
 
-  out.add(packageToDependencyStream(pkgJSON).pipe(pipeline));
+  var cacheRead;
+
+  npm.load(opts, function () {
+    cacheRead = npm.commands.cache.read;
+    out.add(packageToDependencyStream(rootJSON).pipe(pipeline));
+  });
 
   return out;
 
-  function getPackageJson(dep, callback) {
-    read(dep.name, dep.versionRange, function (err, pkgJSON) {
+  function getPackage(dep, callback) {
+    cacheRead(dep.name, dep.versionRange, function (err, pkgJSON) {
       if (err) return callback(err);
       dep['package'] = pkgJSON;
-      dep.version = pkgJSON.version;
+      dep.version    = pkgJSON.version;
+      dep.parent     = parentDep;
+      dep.cacheDir   = path.join(npm.config.root.cache, dep.name, dep.version);
       callback(null, dep);
     });
   }
@@ -53,46 +48,43 @@ function createDependencyStream(pkgJSON, opts) {
     }
   }
 
-  function recur(dependency, callback) {
-    dependency.dependencies = {};
+  function recur(dep, callback) {
+    dep.dependencies = {};
     out.add(
-      createDependencyStream(dependency['package'], opts)
+      createDependencyStream(dep['package'], opts, dep)
       .on('data', function (child) {
-        dependency.dependencies[child.name] = child;
+        dep.dependencies[child.name] = child;
       })
       .on('error', callback)
       .on('end', function () {
-        callback(null, dependency)
+        callback(null, dep)
       })
     )
   }
-
 }
 
 // manual little self-test
 if (module === require.main) {
-  npm.load({loglevel: 'silent'}, function () {
-    var pkg = {
-      name: 'my-pkg',
-      version: '1.0.0',
-      dependencies: {
-        'request': 'latest',
-        'express': 'latest'
-      }
-    };
-    createDependencyStream(pkg).on('data', function (dependency) {
-        var parents = [];
-        var pd = dependency;
-        while ((pd = pd.parent)) {
-          parents.push(pd.name)
-        }
-        parents.push(pkg.name)
-        console.log(
-          "%s@%s [required by %s]",
-          dependency.name,
-          dependency.version,
-          parents.join('->')
-        );
-      })
+  var pkg = {
+    name: 'my-pkg',
+    version: '1.0.0',
+    dependencies: {
+      'request': 'latest',
+      'express': 'latest'
+    }
+  };
+  createDependencyStream(pkg).on('data', function (dependency) {
+    var parents = [];
+    var pd = dependency;
+    while ((pd = pd.parent)) {
+      parents.unshift(pd.name)
+    }
+    parents.unshift(pkg.name);
+    console.log(
+      "%s@%s [required by %s]",
+      dependency.name,
+      dependency.version,
+      parents.join('->')
+    );
   })
 }
